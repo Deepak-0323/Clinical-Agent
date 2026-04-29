@@ -1,0 +1,308 @@
+import psycopg2
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def setup_database():
+    """Run schema migrations on Supabase database"""
+    
+    # Get database URL from environment
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        print("❌ Error: DATABASE_URL not found in environment variables")
+        print("Please set DATABASE_URL in your .env file")
+        print("Format: postgresql://postgres:[PASSWORD]@[PROJECT_REF].supabase.co:5432/postgres")
+        return
+    
+    print("Connecting to Supabase database...")
+    
+    try:
+        # Connect to Supabase PostgreSQL
+        conn = psycopg2.connect(database_url)
+        cursor = conn.cursor()
+        
+        # Run schema migration
+        print("\nRunning schema migrations...")
+        schema_path = os.path.join(os.path.dirname(__file__), '..', 'database', '001_initial_schema.sql')
+        
+        if os.path.exists(schema_path):
+            with open(schema_path, 'r', encoding='utf-8') as f:
+                schema_sql = f.read()
+                # Execute each statement separately
+                statements = schema_sql.split(';')
+                for statement in statements:
+                    statement = statement.strip()
+                    if statement and not statement.startswith('--'):
+                        try:
+                            cursor.execute(statement)
+                        except psycopg2.errors.DuplicateTable:
+                            print(f"  ⚠ Table already exists, skipping...")
+                        except Exception as e:
+                            if "already exists" not in str(e).lower():
+                                print(f"  ⚠ Warning: {e}")
+                
+                conn.commit()
+            print("✓ Schema migrations completed")
+        else:
+            print(f"❌ Schema file not found at: {schema_path}")
+        
+        cursor.close()
+        conn.close()
+        
+        print("\n✅ Database setup complete!")
+        
+    except psycopg2.OperationalError as e:
+        print(f"❌ Error connecting to database: {e}")
+        print("\nPlease check:")
+        print("1. Your DATABASE_URL is correct in .env file")
+        print("2. Your Supabase project is active")
+        print("3. Your IP is allowed in Supabase Dashboard > Settings > Database > Connection Pooling")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+if __name__ == "__main__":
+    setup_database()
+
+import asyncio
+import random
+import httpx
+from datetime import datetime, timedelta
+
+class VitalsSimulator:
+    """Simulate continuous vitals streaming for testing"""
+    
+    def __init__(self, api_url: str = "http://localhost:8000"):
+        self.api_url = api_url
+        self.encounter_id = 1
+        
+    def generate_normal_vitals(self):
+        """Generate physiologically normal vitals"""
+        return {
+            "heart_rate": random.gauss(75, 10),
+            "systolic_bp": random.gauss(120, 10),
+            "diastolic_bp": random.gauss(80, 8),
+            "mean_arterial_pressure": random.gauss(85, 10),
+            "respiratory_rate": random.gauss(16, 3),
+            "spo2": random.gauss(97, 2),
+            "temperature": random.gauss(37.0, 0.3)
+        }
+    
+    def generate_deteriorating_vitals(self, severity: float = 0.5):
+        """Generate deteriorating vitals (0=normal, 1=critical)"""
+        base = self.generate_normal_vitals()
+        
+        # Simulate sepsis pattern
+        base["heart_rate"] += severity * 40  # Tachycardia
+        base["respiratory_rate"] += severity * 10  # Tachypnea
+        base["temperature"] += severity * 2  # Fever
+        base["mean_arterial_pressure"] -= severity * 20  # Hypotension
+        base["spo2"] -= severity * 5  # Hypoxemia
+        
+        return base
+    
+    async def stream_vitals(self, duration_minutes: int = 60, deteriorate: bool = False):
+        """Stream vitals for specified duration"""
+        async with httpx.AsyncClient() as client:
+            start_time = datetime.now()
+            iteration = 0
+            
+            while (datetime.now() - start_time).total_seconds() < duration_minutes * 60:
+                iteration += 1
+                
+                # Calculate deterioration if enabled
+                severity = 0
+                if deteriorate:
+                    # Gradually increase severity over time
+                    progress = (datetime.now() - start_time).total_seconds() / (duration_minutes * 60)
+                    severity = min(progress * 1.5, 1.0)
+                
+                # Generate vitals
+                if deteriorate:
+                    vitals = self.generate_deteriorating_vitals(severity)
+                else:
+                    vitals = self.generate_normal_vitals()
+                
+                vitals["timestamp"] = datetime.now().isoformat()
+                vitals["encounter_id"] = self.encounter_id
+                
+                # Send to API
+                try:
+                    response = await client.post(
+                        f"{self.api_url}/api/vitals",
+                        json=vitals
+                    )
+                    status = "✓" if response.status_code == 200 else "✗"
+                    print(f"{status} [{iteration}] HR:{vitals['heart_rate']:.0f} MAP:{vitals['mean_arterial_pressure']:.0f} RR:{vitals['respiratory_rate']:.0f} SpO2:{vitals['spo2']:.1f}%")
+                except Exception as e:
+                    print(f"✗ Error sending vitals: {e}")
+                
+                # Wait 30 seconds before next reading
+                await asyncio.sleep(30)
+
+async def main():
+    print("Clinical Vitals Simulator")
+    print("=" * 50)
+    print("1. Normal vitals stream (stable patient)")
+    print("2. Deteriorating vitals stream (sepsis pattern)")
+    
+    choice = input("\nSelect option (1 or 2): ").strip()
+    duration = int(input("Duration in minutes (default 60): ").strip() or "60")
+    
+    simulator = VitalsSimulator()
+    
+    if choice == "2":
+        print(f"\n🚨 Simulating deteriorating patient for {duration} minutes...")
+        await simulator.stream_vitals(duration, deteriorate=True)
+    else:
+        print(f"\n✓ Simulating stable patient for {duration} minutes...")
+        await simulator.stream_vitals(duration, deteriorate=False)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+import os
+import sys
+import httpx
+from dotenv import load_dotenv
+
+
+def main() -> int:
+    """
+    Minimal connectivity check to Supabase (no DB password needed).
+    Requires:
+      - SUPABASE_URL
+      - SUPABASE_ANON_KEY
+    """
+    load_dotenv(os.path.join("backend", ".env"))
+
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
+
+    if not supabase_url or not supabase_anon_key:
+        print("❌ Missing SUPABASE_URL or SUPABASE_ANON_KEY in backend/.env")
+        return 1
+
+    # Auth health endpoint is the simplest “is the project up” probe.
+    url = supabase_url.rstrip("/") + "/auth/v1/health"
+    headers = {"apikey": supabase_anon_key}
+
+    try:
+        r = httpx.get(url, headers=headers, timeout=20.0)
+    except Exception as e:
+        print(f"❌ Request failed: {e}")
+        return 1
+
+    if 200 <= r.status_code < 300:
+        print("✅ Supabase reachable (auth health OK).")
+        return 0
+
+    print(f"❌ Supabase health check failed: HTTP {r.status_code}")
+    try:
+        print(r.text[:500])
+    except Exception:
+        pass
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from app.agents.rag_retriever import RAGRetriever
+
+def seed_guidelines():
+    """Seed ChromaDB with sample clinical guidelines"""
+    
+    retriever = RAGRetriever()
+    
+    # Sample guideline sections
+    guidelines = [
+        {
+            "doc_id": "nice_ng51",
+            "title": "NICE Guideline NG51: Sepsis recognition and management",
+            "source": "NICE",
+            "sections": [
+                {
+                    "title": "High-risk criteria",
+                    "content": "High-risk criteria for sepsis include: objective evidence of new or altered mental state, heart rate greater than 130 per minute, respiratory rate 25 breaths per minute or more, needs oxygen to keep SpO2 92% or above, systolic blood pressure 90 mmHg or less, or less than 100 mmHg if person aged 65 or over, lactate 2 mmol/L or more, recent chemotherapy, non-blanching rash or mottled ashen or cyanotic skin.",
+                    "version": "2021"
+                },
+                {
+                    "title": "Moderate to high risk management",
+                    "content": "For people identified as at moderate to high risk of sepsis, take blood cultures before giving antibiotics. Give intravenous antibiotics within one hour. Give intravenous fluid resuscitation if systolic blood pressure is 90 mmHg or less, or there is evidence of acute kidney injury. Measure serum lactate concentration. Monitor urine output.",
+                    "version": "2021"
+                }
+            ]
+        },
+        {
+            "doc_id": "kdigo_aki",
+            "title": "KDIGO Clinical Practice Guideline for Acute Kidney Injury",
+            "source": "KDIGO",
+            "sections": [
+                {
+                    "title": "AKI Definition",
+                    "content": "Acute kidney injury is defined by any of the following: increase in serum creatinine by 0.3 mg/dL or more within 48 hours, or increase in serum creatinine to 1.5 times baseline or more within the prior 7 days, or urine volume less than 0.5 mL/kg/h for 6 hours. AKI is staged based on severity from Stage 1 to Stage 3.",
+                    "version": "2012"
+                },
+                {
+                    "title": "Risk Assessment",
+                    "content": "Assess all patients for AKI risk factors including volume depletion, sepsis, critical illness, use of nephrotoxic agents, chronic kidney disease, cardiac failure, liver disease, diabetes mellitus, and exposure to iodinated contrast agents. Monitor serum creatinine and urine output in at-risk patients.",
+                    "version": "2012"
+                }
+            ]
+        },
+        {
+            "doc_id": "who_oxygen",
+            "title": "WHO Clinical Management Guidelines: Oxygen Therapy",
+            "source": "WHO",
+            "sections": [
+                {
+                    "title": "Oxygen therapy initiation",
+                    "content": "Initiate supplemental oxygen therapy in adults when SpO2 is less than 90%. Target SpO2 is 94% or greater in non-pregnant adults and 92-95% in pregnant patients. Use pulse oximetry to titrate oxygen therapy. Monitor respiratory rate, use of accessory muscles, and ability to speak in full sentences.",
+                    "version": "2020"
+                },
+                {
+                    "title": "Escalation criteria",
+                    "content": "Consider escalation of respiratory support if patient shows persistent hypoxemia despite oxygen therapy, respiratory rate greater than 30 per minute, severe respiratory distress with use of accessory muscles, or altered mental status. Early consultation with critical care is recommended for deteriorating patients.",
+                    "version": "2020"
+                }
+            ]
+        },
+        {
+            "doc_id": "hospital_news2",
+            "title": "Hospital Protocol: NEWS2 Early Warning Score",
+            "source": "Hospital",
+            "sections": [
+                {
+                    "title": "NEWS2 Scoring",
+                    "content": "National Early Warning Score 2 (NEWS2) uses six physiological parameters: respiration rate, oxygen saturations, temperature, systolic blood pressure, pulse rate, and level of consciousness. Score ranges: 0 indicating parameter is within normal range, 3 indicating high risk, aggregate score of 5-6 is medium risk, 7 or more is high risk requiring urgent response.",
+                    "version": "2.3"
+                },
+                {
+                    "title": "Escalation protocol",
+                    "content": "NEWS2 aggregate score 0-4: reassess every 4-6 hours. Score 3 in any single parameter: increase frequency to every hour, inform registered nurse. Score 5-6: urgent review by ward-based doctor, consider critical care referral. Score 7 or more: emergency assessment by critical care team, transfer to higher level of care.",
+                    "version": "2.3"
+                }
+            ]
+        }
+    ]
+    
+    print("Seeding ChromaDB with clinical guidelines...")
+    
+    for guideline in guidelines:
+        retriever.index_guideline_document(
+            doc_id=guideline["doc_id"],
+            title=guideline["title"],
+            source=guideline["source"],
+            sections=guideline["sections"]
+        )
+        print(f"✓ Indexed: {guideline['title']}")
+    
+    print("\n✅ Guideline seeding complete!")
+
+if __name__ == "__main__":
+    seed_guidelines()
